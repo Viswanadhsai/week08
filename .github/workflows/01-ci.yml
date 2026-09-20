@@ -10,10 +10,10 @@ on:
 jobs:
 
   # =========================================================
-  # Terraform Infrastructure
+  # Terraform Infrastructure Check
   # =========================================================
   terraform-check:
-    name: Terraform Validate, Plan and Apply
+    name: Terraform Validate and Plan
     runs-on: ubuntu-latest
 
     steps:
@@ -39,10 +39,6 @@ jobs:
       - name: Terraform Plan
         working-directory: terraform
         run: terraform plan -input=false -no-color
-
-      - name: Terraform Apply
-        working-directory: terraform
-        run: terraform apply -auto-approve -input=false
 
 
   # =========================================================
@@ -135,7 +131,7 @@ jobs:
 
 
   # =========================================================
-  # Build and Push Docker Images
+  # Build, Docker Scout Scan and Push
   # =========================================================
   build-and-push:
     name: Build and Push ${{ matrix.image }}
@@ -207,6 +203,28 @@ jobs:
             --platform linux/amd64 \
             -t $ACR_LOGIN_SERVER/${{ matrix.image }}:${{ github.sha }} \
             ./${{ matrix.service }}
+
+      - name: Docker Scout CVE Scan
+        if: matrix.service == 'student-service'
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: local://${{ env.ACR_LOGIN_SERVER }}/${{ matrix.image }}:${{ github.sha }}
+          dockerhub-user: msviswa
+          dockerhub-password: ${{ secrets.DOCKER_SCOUT_TOKEN }}
+          only-severities: critical,high
+          exit-code: false
+          summary: true
+
+      - name: Docker Scout Recommendations
+        if: matrix.service == 'student-service'
+        uses: docker/scout-action@v1
+        with:
+          command: recommendations
+          image: local://${{ env.ACR_LOGIN_SERVER }}/${{ matrix.image }}:${{ github.sha }}
+          dockerhub-user: msviswa
+          dockerhub-password: ${{ secrets.DOCKER_SCOUT_TOKEN }}
+          summary: true
 
       - name: Push Docker image with commit SHA
         run: |
