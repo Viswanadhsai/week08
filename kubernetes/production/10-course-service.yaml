@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: course-service
-          image: placeholder
+          image: viswa722acr102ds226051707.azurecr.io/koalatech-course-service:0caa5c3db527cde417599a80e3f65106d7519fa7
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

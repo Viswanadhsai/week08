@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-
   workflow_dispatch:
 
 jobs:
@@ -39,6 +38,42 @@ jobs:
       - name: Terraform Plan
         working-directory: terraform
         run: terraform plan -input=false -no-color
+
+
+  # =========================================================
+  # Monitoring Validation
+  # =========================================================
+  monitoring-check:
+    name: Validate Prometheus and Grafana
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Connect to AKS
+        run: |
+          az aks get-credentials \
+            --resource-group deakinuni \
+            --name viswa102daks \
+            --overwrite-existing
+
+      - name: Validate Monitoring Pods
+        run: |
+          kubectl wait \
+            --for=condition=Ready \
+            pod \
+            --all \
+            -n monitoring \
+            --timeout=180s
+
+          echo "===== Monitoring Pods ====="
+          kubectl get pods -n monitoring
+
+          echo "===== Monitoring Services ====="
+          kubectl get svc -n monitoring
 
 
   # =========================================================
@@ -140,6 +175,7 @@ jobs:
     needs:
       - backend-test
       - terraform-check
+      - monitoring-check
 
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
 
