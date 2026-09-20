@@ -1,26 +1,22 @@
 name: 01 - CI
 
 on:
-  # Trigger the workflow on push to main branch
   push:
     branches:
       - main
 
-  # Manual trigger for the workflow
   workflow_dispatch:
-
 
 jobs:
 
   # =========================================================
-  # Terraform - Infrastructure Validation and Plan
+  # Terraform Infrastructure
   # =========================================================
   terraform-check:
-    name: Terraform Validate and Plan
+    name: Terraform Validate, Plan and Apply
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -43,6 +39,10 @@ jobs:
       - name: Terraform Plan
         working-directory: terraform
         run: terraform plan -input=false -no-color
+
+      - name: Terraform Apply
+        working-directory: terraform
+        run: terraform apply -auto-approve -input=false
 
 
   # =========================================================
@@ -114,7 +114,6 @@ jobs:
       AZURE_STORAGE_CONTAINER_NAME: ""
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -142,13 +141,15 @@ jobs:
     name: Build and Push ${{ matrix.image }}
     runs-on: ubuntu-latest
 
-    # Backend tests and Terraform must succeed first
     needs:
       - backend-test
       - terraform-check
 
-    # Build and push when code is pushed to main or manually triggered
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    env:
+      ACR_NAME: viswa722acr102ds226051707
+      ACR_LOGIN_SERVER: viswa722acr102ds226051707.azurecr.io
 
     strategy:
       fail-fast: false
@@ -174,7 +175,6 @@ jobs:
             image: koalatech-enrollment-service
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -184,17 +184,31 @@ jobs:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Login to Azure Container Registry
+        shell: bash
         run: |
-          az acr login --name ${{ vars.ACR_NAME }}
+          ACR_USERNAME=$(az acr credential show \
+            --name "$ACR_NAME" \
+            --query username \
+            -o tsv)
+
+          ACR_PASSWORD=$(az acr credential show \
+            --name "$ACR_NAME" \
+            --query "passwords[0].value" \
+            -o tsv)
+
+          echo "$ACR_PASSWORD" | docker login \
+            "$ACR_LOGIN_SERVER" \
+            --username "$ACR_USERNAME" \
+            --password-stdin
 
       - name: Build Docker image
         run: |
           docker build \
             --platform linux/amd64 \
-            -t ${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.image }}:${{ github.sha }} \
+            -t $ACR_LOGIN_SERVER/${{ matrix.image }}:${{ github.sha }} \
             ./${{ matrix.service }}
 
       - name: Push Docker image with commit SHA
         run: |
           docker push \
-            ${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.image }}:${{ github.sha }}
+            $ACR_LOGIN_SERVER/${{ matrix.image }}:${{ github.sha }}
