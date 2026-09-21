@@ -274,3 +274,39 @@ jobs:
           echo "business journey completed successfully."
           echo "Temporary environment was removed after validation."
           echo "======================================================"
+
+  # ===================================================================
+  # DOWNSTREAM PIPELINE PROGRESSION PROOF
+  # ===================================================================
+  # This job depends directly on the authenticated E2E quality gate.
+  #
+  # GitHub Actions will run this job only when:
+  #     ephemeral-e2e-quality-gate = SUCCESS
+  #
+  # If the E2E quality gate fails, this job is automatically skipped.
+  # This provides visible evidence that E2E testing controls whether
+  # the pipeline is allowed to progress.
+  # ===================================================================
+
+  downstream-gate-proof:
+
+    name: Downstream Stage - Allowed Only After E2E PASS
+
+    needs:
+      - ephemeral-e2e-quality-gate
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Confirm pipeline progression
+        run: |
+          echo "======================================================"
+          echo "E2E QUALITY GATE: PASSED"
+          echo "DOWNSTREAM PIPELINE STAGE: ALLOWED"
+          echo ""
+          echo "The authenticated KoalaTech E2E business journey"
+          echo "completed successfully, so the pipeline is permitted"
+          echo "to continue to subsequent delivery/deployment stages."
+          echo "======================================================"
+
