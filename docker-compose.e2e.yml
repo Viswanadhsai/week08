@@ -1,0 +1,312 @@
+# =====================================================================
+# SIT722 10.3HD - KoalaTech Ephemeral E2E Environment
+#
+# Purpose:
+# Build an isolated, temporary environment for a realistic end-to-end
+# quality gate.
+#
+# Business journey tested:
+#
+# Authentication
+#      |
+#      v
+# User Service -> JWT
+#                  |
+#                  v
+# Student Service -> Course Service -> Enrollment Service
+#
+# Design decisions:
+# - Every database is temporary.
+# - No persistent database volumes are used.
+# - Production .env files are not required.
+# - All APIs must become healthy before testing starts.
+# - Authentication remains enabled.
+# - A real admin JWT is used for protected operations.
+# - The complete environment can be destroyed after every CI run.
+# =====================================================================
+
+services:
+
+  # ===================================================================
+  # USER DATABASE
+  # ===================================================================
+  # Authentication begins with an isolated PostgreSQL database.
+  # The database disappears when the E2E environment is destroyed.
+  # ===================================================================
+  user-db:
+    image: postgres:16-alpine
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: users
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d users"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+    networks:
+      - koalatech-e2e-network
+
+
+  # ===================================================================
+  # USER / AUTHENTICATION SERVICE
+  # ===================================================================
+  # The real KoalaTech User Service creates an administrator account
+  # during startup.
+  #
+  # The E2E test authenticates through /auth/login and obtains a genuine
+  # JWT rather than bypassing role-based access control.
+  # ===================================================================
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+
+    environment:
+      POSTGRES_HOST: user-db
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: users
+      POSTGRES_SSLMODE: disable
+
+      # All participating microservices must use the same signing key so
+      # that tokens issued by User Service can be verified consistently.
+      JWT_SECRET_KEY: koalatech-e2e-temporary-key
+
+      # These credentials exist only inside the disposable E2E stack.
+      # They are not production credentials.
+      DEFAULT_ADMIN_USERNAME: e2e-admin
+      DEFAULT_ADMIN_EMAIL: e2e.admin@koalatech.edu.au
+      DEFAULT_ADMIN_PASSWORD: E2EOnlyAdmin123!
+
+    ports:
+      - "18000:8000"
+
+    depends_on:
+      user-db:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+    networks:
+      - koalatech-e2e-network
+
+
+  # ===================================================================
+  # STUDENT DATABASE
+  # ===================================================================
+  student-db:
+    image: postgres:16-alpine
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: students
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d students"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+    networks:
+      - koalatech-e2e-network
+
+
+  # ===================================================================
+  # STUDENT SERVICE
+  # ===================================================================
+  student-service:
+    build:
+      context: ./student-service
+      dockerfile: Dockerfile
+
+    environment:
+      POSTGRES_HOST: student-db
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: students
+      POSTGRES_SSLMODE: disable
+
+      # Same key as User Service so the admin JWT can be verified.
+      JWT_SECRET_KEY: koalatech-e2e-temporary-key
+
+      # Photo upload is outside this E2E journey, but the application
+      # expects the storage setting to exist.
+      AZURE_STORAGE_CONNECTION_STRING: UseDevelopmentStorage=true
+
+    ports:
+      - "18001:8000"
+
+    depends_on:
+      student-db:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+    networks:
+      - koalatech-e2e-network
+
+
+  # ===================================================================
+  # COURSE DATABASE
+  # ===================================================================
+  course-db:
+    image: postgres:16-alpine
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: courses
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d courses"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+    networks:
+      - koalatech-e2e-network
+
+
+  # ===================================================================
+  # COURSE SERVICE
+  # ===================================================================
+  course-service:
+    build:
+      context: ./course-service
+      dockerfile: Dockerfile
+
+    environment:
+      POSTGRES_HOST: course-db
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: courses
+      POSTGRES_SSLMODE: disable
+
+      # Required to validate the JWT created by User Service.
+      JWT_SECRET_KEY: koalatech-e2e-temporary-key
+
+    ports:
+      - "18003:8000"
+
+    depends_on:
+      course-db:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+    networks:
+      - koalatech-e2e-network
+
+
+  # ===================================================================
+  # ENROLLMENT DATABASE
+  # ===================================================================
+  enrollment-db:
+    image: postgres:16-alpine
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: enrollments
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d enrollments"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+    networks:
+      - koalatech-e2e-network
+
+
+  # ===================================================================
+  # ENROLLMENT SERVICE
+  # ===================================================================
+  # This service completes the business journey by linking the temporary
+  # student and course created earlier in the E2E execution.
+  # ===================================================================
+  enrollment-service:
+    build:
+      context: ./enrollment-service
+      dockerfile: Dockerfile
+
+    environment:
+      POSTGRES_HOST: enrollment-db
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: enrollments
+      POSTGRES_SSLMODE: disable
+
+      JWT_SECRET_KEY: koalatech-e2e-temporary-key
+
+    ports:
+      - "18004:8000"
+
+    depends_on:
+      enrollment-db:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+    networks:
+      - koalatech-e2e-network
+
+
+# =====================================================================
+# ISOLATED E2E NETWORK
+# =====================================================================
+# All components communicate through a dedicated Docker network.
+# This prevents accidental dependency on another KoalaTech environment.
+# =====================================================================
+networks:
+  koalatech-e2e-network:
+    driver: bridge

@@ -1,0 +1,276 @@
+# =====================================================================
+# SIT722 10.3HD - KoalaTech Ephemeral E2E Quality Gate
+#
+# Purpose:
+# Automatically create a disposable KoalaTech environment in GitHub
+# Actions, execute an authenticated multi-service business journey,
+# use the E2E result as a CI quality gate, and always remove the
+# temporary environment afterwards.
+#
+# Tested journey:
+#
+# User Service -> Admin JWT
+#                    |
+#                    v
+# Student Service -> Course Service -> Enrollment Service
+#
+# Quality-gate behaviour:
+#
+# PASS -> workflow continues successfully
+# FAIL -> workflow is blocked
+#
+# Cleanup executes even when the quality gate fails.
+# =====================================================================
+
+name: 10.3HD - Ephemeral E2E Quality Gate
+
+
+# =====================================================================
+# 1. WORKFLOW TRIGGERS
+# =====================================================================
+# Normal CI execution occurs whenever work is pushed to the dedicated
+# task-10.3hd branch.
+#
+# workflow_dispatch also lets us manually demonstrate a controlled
+# quality-gate failure without deliberately breaking application code.
+# =====================================================================
+
+on:
+  push:
+    branches:
+      - task-10.3hd
+
+  workflow_dispatch:
+    inputs:
+      force_failure:
+        description: "Demonstrate the quality gate blocking the pipeline"
+        required: true
+        default: false
+        type: boolean
+
+
+# =====================================================================
+# 2. MINIMUM REQUIRED PERMISSIONS
+# =====================================================================
+# This workflow only reads repository source code.
+# It does not require Azure credentials, registry credentials or other
+# cloud permissions because the E2E environment is fully ephemeral.
+# =====================================================================
+
+permissions:
+  contents: read
+
+
+jobs:
+
+  # ===================================================================
+  # AUTHENTICATED EPHEMERAL E2E TEST
+  # ===================================================================
+
+  ephemeral-e2e-quality-gate:
+
+    name: Authenticated Ephemeral E2E Quality Gate
+
+    # GitHub-hosted Ubuntu already provides Docker and Docker Compose.
+    runs-on: ubuntu-latest
+
+    # Prevent a faulty test environment from consuming runner time
+    # indefinitely if a service unexpectedly fails to initialise.
+    timeout-minutes: 20
+
+    env:
+
+      # A unique Compose project name prevents resources created by this
+      # workflow execution from colliding with another environment.
+      COMPOSE_PROJECT_NAME: koalatech-e2e-${{ github.run_id }}
+
+      # Normal push runs use false.
+      # Manual workflow runs may intentionally set this to true to prove
+      # that the quality gate correctly blocks the CI pipeline.
+      E2E_FORCE_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_failure || 'false' }}
+
+
+    steps:
+
+      # ---------------------------------------------------------------
+      # STEP 1 - CHECK OUT THE APPLICATION
+      # ---------------------------------------------------------------
+      # Retrieve the exact repository revision being validated.
+      # ---------------------------------------------------------------
+
+      - name: Checkout KoalaTech source
+        uses: actions/checkout@v4
+
+
+      # ---------------------------------------------------------------
+      # STEP 2 - PREPARE PYTHON
+      # ---------------------------------------------------------------
+      # The custom E2E test intentionally uses only Python's standard
+      # library. No additional pip dependencies are needed.
+      # ---------------------------------------------------------------
+
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+
+      # ---------------------------------------------------------------
+      # STEP 3 - VALIDATE THE E2E INFRASTRUCTURE DEFINITION
+      # ---------------------------------------------------------------
+      # Catch Docker Compose syntax/configuration problems before
+      # spending time building application images.
+      # ---------------------------------------------------------------
+
+      - name: Validate ephemeral Compose configuration
+        run: |
+          echo "Validating KoalaTech ephemeral environment..."
+          docker compose \
+            -f docker-compose.e2e.yml \
+            config --quiet
+
+          echo "Compose configuration is valid."
+
+
+      # ---------------------------------------------------------------
+      # STEP 4 - BUILD AND START THE TEMPORARY ENVIRONMENT
+      # ---------------------------------------------------------------
+      # --build ensures the environment tests the source code belonging
+      # to this exact Git commit.
+      #
+      # --wait means GitHub Actions does not begin the business test
+      # until every configured service reports healthy.
+      # ---------------------------------------------------------------
+
+      - name: Build and start ephemeral KoalaTech environment
+        run: |
+          echo "Building temporary KoalaTech E2E environment..."
+
+          docker compose \
+            -f docker-compose.e2e.yml \
+            up \
+            --detach \
+            --build \
+            --wait
+
+          echo "Ephemeral environment is ready."
+
+
+      # ---------------------------------------------------------------
+      # STEP 5 - DISPLAY ENVIRONMENT READINESS
+      # ---------------------------------------------------------------
+      # This provides readable CI evidence showing which containers are
+      # running before the E2E quality gate executes.
+      # ---------------------------------------------------------------
+
+      - name: Verify temporary service state
+        run: |
+          echo "Current KoalaTech E2E service state:"
+          docker compose \
+            -f docker-compose.e2e.yml \
+            ps
+
+
+      # ---------------------------------------------------------------
+      # STEP 6 - RUN THE AUTHENTICATED BUSINESS JOURNEY
+      # ---------------------------------------------------------------
+      # The Python test performs:
+      #
+      # 1. API readiness verification
+      # 2. Real administrator authentication
+      # 3. JWT validation
+      # 4. Student creation and persistence check
+      # 5. Course creation and persistence check
+      # 6. Enrollment creation
+      # 7. Relationship verification by enrollment/student/course
+      #
+      # A non-zero Python exit code immediately fails this job.
+      # Therefore this step is the actual CI/CD quality gate.
+      # ---------------------------------------------------------------
+
+      - name: Run authenticated KoalaTech E2E quality gate
+        run: |
+          echo "Starting authenticated multi-service E2E journey..."
+          echo "Controlled failure mode: ${E2E_FORCE_FAILURE}"
+
+          python e2e/test_koalatech_journey.py
+
+
+      # ---------------------------------------------------------------
+      # STEP 7 - COLLECT FAILURE DIAGNOSTICS
+      # ---------------------------------------------------------------
+      # If any previous step fails, collect container state and recent
+      # logs before cleanup occurs.
+      #
+      # This makes failures diagnosable instead of leaving developers
+      # with only a generic CI error.
+      # ---------------------------------------------------------------
+
+      - name: Collect diagnostics when quality gate fails
+        if: failure()
+        run: |
+          echo "E2E quality gate failed."
+          echo "Collecting temporary environment diagnostics..."
+
+          echo ""
+          echo "================ CONTAINER STATE ================"
+          docker compose \
+            -f docker-compose.e2e.yml \
+            ps \
+            --all || true
+
+          echo ""
+          echo "================ SERVICE LOGS ==================="
+          docker compose \
+            -f docker-compose.e2e.yml \
+            logs \
+            --no-color \
+            --tail=100 || true
+
+
+      # ---------------------------------------------------------------
+      # STEP 8 - GUARANTEED EPHEMERAL CLEANUP
+      # ---------------------------------------------------------------
+      # if: always() is critical.
+      #
+      # Cleanup executes whether:
+      # - the E2E test passes;
+      # - an assertion fails;
+      # - authentication fails;
+      # - a service becomes unhealthy.
+      #
+      # --volumes removes temporary PostgreSQL data.
+      # --remove-orphans removes unexpected Compose containers.
+      #
+      # This guarantees every pipeline run leaves behind a clean runner.
+      # ---------------------------------------------------------------
+
+      - name: Always destroy ephemeral E2E environment
+        if: always()
+        run: |
+          echo "Destroying temporary KoalaTech E2E environment..."
+
+          docker compose \
+            -f docker-compose.e2e.yml \
+            down \
+            --volumes \
+            --remove-orphans
+
+          echo "Ephemeral cleanup completed."
+
+
+      # ---------------------------------------------------------------
+      # STEP 9 - SUCCESS SUMMARY
+      # ---------------------------------------------------------------
+      # This step only executes when the quality gate passed.
+      # ---------------------------------------------------------------
+
+      - name: Report successful quality gate
+        if: success()
+        run: |
+          echo "======================================================"
+          echo "KOALATECH 10.3HD E2E QUALITY GATE: PASS"
+          echo "Authenticated Student -> Course -> Enrollment"
+          echo "business journey completed successfully."
+          echo "Temporary environment was removed after validation."
+          echo "======================================================"
