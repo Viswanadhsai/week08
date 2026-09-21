@@ -105,14 +105,32 @@ jobs:
       # ---------------------------------------------------------------
       # STEP 2 - PREPARE PYTHON
       # ---------------------------------------------------------------
-      # The custom E2E test intentionally uses only Python's standard
-      # library. No additional pip dependencies are needed.
+      # Configure Python for the E2E test runner.
+      #
+      # pytest is installed explicitly in the next step so the CI
+      # quality gate uses the same test framework demonstrated locally.
       # ---------------------------------------------------------------
 
       - name: Configure Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # ---------------------------------------------------------------
+      # STEP 2B - INSTALL PYTEST
+      # ---------------------------------------------------------------
+      # pytest is the execution framework for the authenticated
+      # KoalaTech E2E business journey.
+      #
+      # The underlying HTTP workflow remains in the reusable journey
+      # module, while pytest provides standard test discovery, reporting
+      # and a CI-friendly non-zero exit code when the gate fails.
+      # ---------------------------------------------------------------
+
+      - name: Install pytest
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
 
 
       # ---------------------------------------------------------------
@@ -184,8 +202,11 @@ jobs:
       # 6. Enrollment creation
       # 7. Relationship verification by enrollment/student/course
       #
-      # A non-zero Python exit code immediately fails this job.
-      # Therefore this step is the actual CI/CD quality gate.
+      # pytest executes the complete authenticated E2E journey.
+      #
+      # A failed assertion produces a non-zero pytest exit code and
+      # immediately fails this job. Therefore this step is the actual
+      # CI/CD quality gate.
       # ---------------------------------------------------------------
 
       - name: Run authenticated KoalaTech E2E quality gate
@@ -193,7 +214,7 @@ jobs:
           echo "Starting authenticated multi-service E2E journey..."
           echo "Controlled failure mode: ${E2E_FORCE_FAILURE}"
 
-          python e2e/test_koalatech_journey.py
+          python -m pytest -v -s e2e/test_pytest_quality_gate.py
 
 
       # ---------------------------------------------------------------
