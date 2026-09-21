@@ -87,7 +87,7 @@ jobs:
       # Normal push runs use false.
       # Manual workflow runs may intentionally set this to true to prove
       # that the quality gate correctly blocks the CI pipeline.
-      E2E_FORCE_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_failure || 'false' }}
+      E2E_FORCE_FAILURE: true
 
 
     steps:
