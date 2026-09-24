@@ -84,7 +84,7 @@ jobs:
 
       # Normal push = false.
       # Manual execution can set true to prove pipeline blocking.
-      E2E_FORCE_FAILURE: 'true'
+      E2E_FORCE_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_failure || 'false' }}
 
 
     steps:
