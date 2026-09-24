@@ -31,7 +31,7 @@ name: 10.3HD - Ephemeral E2E Quality Gate
 # Normal CI execution occurs whenever work is pushed to the dedicated
 # task-10.3hd branch.
 #
-# workflow_dispatch also lets us manually demonstrate a controlled
+# workflow_dispatch lets us manually demonstrate a controlled
 # quality-gate failure without deliberately breaking application code.
 # =====================================================================
 
@@ -52,9 +52,11 @@ on:
 # =====================================================================
 # 2. MINIMUM REQUIRED PERMISSIONS
 # =====================================================================
-# Repository source is read-only.
-# Azure authentication for the PASS-only ACR promotion uses the
-# existing AZURE_CREDENTIALS GitHub secret.
+# Repository source code is read-only.
+#
+# ACR authentication uses repository secrets:
+# ACR_USERNAME
+# ACR_PASSWORD
 # =====================================================================
 
 permissions:
@@ -77,18 +79,18 @@ jobs:
 
     env:
 
-      # Unique project name keeps every temporary environment isolated.
+      # Unique project name keeps each temporary environment isolated.
       COMPOSE_PROJECT_NAME: koalatech-e2e-${{ github.run_id }}
 
       # Normal push = false.
-      # Manual run may set true to prove the quality gate blocks.
+      # Manual execution can set true to prove pipeline blocking.
       E2E_FORCE_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_failure || 'false' }}
 
 
     steps:
 
       # ---------------------------------------------------------------
-      # STEP 1 - CHECK OUT THE APPLICATION
+      # STEP 1 - CHECK OUT APPLICATION
       # ---------------------------------------------------------------
 
       - name: Checkout KoalaTech source
@@ -116,7 +118,7 @@ jobs:
 
 
       # ---------------------------------------------------------------
-      # STEP 3 - VALIDATE THE E2E INFRASTRUCTURE DEFINITION
+      # STEP 3 - VALIDATE E2E INFRASTRUCTURE
       # ---------------------------------------------------------------
 
       - name: Validate ephemeral Compose configuration
@@ -131,10 +133,7 @@ jobs:
 
 
       # ---------------------------------------------------------------
-      # STEP 4 - BUILD AND START THE TEMPORARY ENVIRONMENT
-      # ---------------------------------------------------------------
-      # --build tests source from this exact Git commit.
-      # --wait prevents E2E execution until services report healthy.
+      # STEP 4 - BUILD AND START TEMPORARY ENVIRONMENT
       # ---------------------------------------------------------------
 
       - name: Build and start ephemeral KoalaTech environment
@@ -152,7 +151,7 @@ jobs:
 
 
       # ---------------------------------------------------------------
-      # STEP 5 - DISPLAY ENVIRONMENT READINESS
+      # STEP 5 - VERIFY ENVIRONMENT READINESS
       # ---------------------------------------------------------------
 
       - name: Verify temporary service state
@@ -165,9 +164,10 @@ jobs:
 
 
       # ---------------------------------------------------------------
-      # STEP 6 - RUN THE AUTHENTICATED BUSINESS JOURNEY
+      # STEP 6 - AUTHENTICATED E2E BUSINESS JOURNEY
       # ---------------------------------------------------------------
-      # The pytest E2E test performs:
+      #
+      # Test performs:
       #
       # 1. API readiness verification
       # 2. Real administrator authentication
@@ -175,10 +175,10 @@ jobs:
       # 4. Student creation and persistence check
       # 5. Course creation and persistence check
       # 6. Enrollment creation
-      # 7. Relationship verification by enrollment/student/course
+      # 7. Relationship verification
       #
-      # Any failed assertion returns a non-zero exit code.
-      # Therefore this step is the actual CI/CD quality gate.
+      # A failed assertion returns a non-zero exit code.
+      # This step therefore acts as the CI/CD quality gate.
       # ---------------------------------------------------------------
 
       - name: Run authenticated KoalaTech E2E quality gate
@@ -190,7 +190,7 @@ jobs:
 
 
       # ---------------------------------------------------------------
-      # STEP 7 - COLLECT FAILURE DIAGNOSTICS
+      # STEP 7 - FAILURE DIAGNOSTICS
       # ---------------------------------------------------------------
 
       - name: Collect diagnostics when quality gate fails
@@ -220,10 +220,11 @@ jobs:
       # ---------------------------------------------------------------
       # STEP 8 - GUARANTEED EPHEMERAL CLEANUP
       # ---------------------------------------------------------------
-      # if: always() guarantees cleanup on both PASS and FAIL.
       #
-      # --volumes removes temporary PostgreSQL data.
-      # --remove-orphans removes unexpected Compose containers.
+      # if: always() guarantees cleanup after PASS or FAIL.
+      #
+      # --volumes removes temporary PostgreSQL databases.
+      # --remove-orphans removes unexpected containers.
       # ---------------------------------------------------------------
 
       - name: Always destroy ephemeral E2E environment
@@ -259,13 +260,14 @@ jobs:
   # ===================================================================
   # PASS-ONLY AZURE CONTAINER REGISTRY PROMOTION
   # ===================================================================
-  # This job directly depends on the authenticated E2E quality gate.
   #
-  # PASS -> this job runs and pushes the validated image to ACR.
-  # FAIL -> GitHub Actions automatically skips this entire job.
+  # This job depends directly on the E2E quality gate.
   #
-  # This demonstrates that the E2E result controls whether an
-  # application artifact is permitted to progress through CI/CD.
+  # PASS -> Docker image is built and pushed to ACR.
+  # FAIL -> GitHub Actions automatically skips this job.
+  #
+  # This proves that only code validated by the authenticated
+  # multi-service E2E test is allowed to progress.
   # ===================================================================
 
   acr-promotion:
@@ -288,7 +290,7 @@ jobs:
     steps:
 
       # ---------------------------------------------------------------
-      # STEP 1 - CHECK OUT THE VALIDATED COMMIT
+      # STEP 1 - CHECK OUT PASS-VALIDATED COMMIT
       # ---------------------------------------------------------------
 
       - name: Checkout validated KoalaTech source
@@ -296,43 +298,23 @@ jobs:
 
 
       # ---------------------------------------------------------------
-      # STEP 2 - AUTHENTICATE TO AZURE
+      # STEP 2 - LOGIN DIRECTLY TO ACR
       # ---------------------------------------------------------------
-
-      - name: Login to Azure
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-
-      # ---------------------------------------------------------------
-      # STEP 3 - AUTHENTICATE TO THE TEMPORARY ACR
-      # ---------------------------------------------------------------
-      # Registry credentials are retrieved inside the GitHub runner
-      # and passed directly to docker login through stdin.
+      #
+      # Credentials are securely stored in GitHub Actions Secrets.
+      # No Azure service-principal login is required.
       # ---------------------------------------------------------------
 
       - name: Login to temporary Azure Container Registry
-        shell: bash
-        run: |
-          ACR_USERNAME=$(az acr credential show \
-            --name "$ACR_NAME" \
-            --query username \
-            -o tsv)
-
-          ACR_PASSWORD=$(az acr credential show \
-            --name "$ACR_NAME" \
-            --query "passwords[0].value" \
-            -o tsv)
-
-          echo "$ACR_PASSWORD" | docker login \
-            "$ACR_LOGIN_SERVER" \
-            --username "$ACR_USERNAME" \
-            --password-stdin
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
 
 
       # ---------------------------------------------------------------
-      # STEP 4 - BUILD AN IMAGE FROM THE PASS-VALIDATED COMMIT
+      # STEP 3 - BUILD PASS-VALIDATED IMAGE
       # ---------------------------------------------------------------
 
       - name: Build PASS-validated Docker image
@@ -347,7 +329,7 @@ jobs:
 
 
       # ---------------------------------------------------------------
-      # STEP 5 - PUSH ONLY AFTER E2E PASS
+      # STEP 4 - PUSH IMAGE TO ACR
       # ---------------------------------------------------------------
 
       - name: Push PASS-validated image to ACR
@@ -359,11 +341,10 @@ jobs:
 
 
       # ---------------------------------------------------------------
-      # STEP 6 - VERIFY THE PROMOTED IMAGE EXISTS IN ACR
+      # STEP 5 - VERIFY IMAGE EXISTS IN ACR
       # ---------------------------------------------------------------
 
       - name: Verify image stored in ACR
-        shell: bash
         run: |
           echo "======================================================"
           echo "E2E QUALITY GATE: PASSED"
@@ -371,7 +352,7 @@ jobs:
           echo "IMAGE: $ACR_LOGIN_SERVER/$IMAGE_NAME:${{ github.sha }}"
           echo "======================================================"
 
-          az acr repository show-tags \
-            --name "$ACR_NAME" \
-            --repository "$IMAGE_NAME" \
-            --output table
+          docker manifest inspect \
+            $ACR_LOGIN_SERVER/$IMAGE_NAME:${{ github.sha }} > /dev/null
+
+          echo "Validated image successfully verified in ACR."
