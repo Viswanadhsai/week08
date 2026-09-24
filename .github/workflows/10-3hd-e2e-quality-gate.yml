@@ -4,8 +4,8 @@
 # Purpose:
 # Automatically create a disposable KoalaTech environment in GitHub
 # Actions, execute an authenticated multi-service business journey,
-# use the E2E result as a CI quality gate, and always remove the
-# temporary environment afterwards.
+# use the E2E result as a CI quality gate, always remove the temporary
+# environment, and promote a validated image to ACR only after PASS.
 #
 # Tested journey:
 #
@@ -16,8 +16,8 @@
 #
 # Quality-gate behaviour:
 #
-# PASS -> workflow continues successfully
-# FAIL -> workflow is blocked
+# PASS -> ACR promotion job runs
+# FAIL -> ACR promotion job is skipped
 #
 # Cleanup executes even when the quality gate fails.
 # =====================================================================
@@ -52,9 +52,9 @@ on:
 # =====================================================================
 # 2. MINIMUM REQUIRED PERMISSIONS
 # =====================================================================
-# This workflow only reads repository source code.
-# It does not require Azure credentials, registry credentials or other
-# cloud permissions because the E2E environment is fully ephemeral.
+# Repository source is read-only.
+# Azure authentication for the PASS-only ACR promotion uses the
+# existing AZURE_CREDENTIALS GitHub secret.
 # =====================================================================
 
 permissions:
@@ -71,22 +71,17 @@ jobs:
 
     name: Authenticated Ephemeral E2E Quality Gate
 
-    # GitHub-hosted Ubuntu already provides Docker and Docker Compose.
     runs-on: ubuntu-latest
 
-    # Prevent a faulty test environment from consuming runner time
-    # indefinitely if a service unexpectedly fails to initialise.
     timeout-minutes: 20
 
     env:
 
-      # A unique Compose project name prevents resources created by this
-      # workflow execution from colliding with another environment.
+      # Unique project name keeps every temporary environment isolated.
       COMPOSE_PROJECT_NAME: koalatech-e2e-${{ github.run_id }}
 
-      # Normal push runs use false.
-      # Manual workflow runs may intentionally set this to true to prove
-      # that the quality gate correctly blocks the CI pipeline.
+      # Normal push = false.
+      # Manual run may set true to prove the quality gate blocks.
       E2E_FORCE_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_failure || 'false' }}
 
 
@@ -94,8 +89,6 @@ jobs:
 
       # ---------------------------------------------------------------
       # STEP 1 - CHECK OUT THE APPLICATION
-      # ---------------------------------------------------------------
-      # Retrieve the exact repository revision being validated.
       # ---------------------------------------------------------------
 
       - name: Checkout KoalaTech source
@@ -105,26 +98,15 @@ jobs:
       # ---------------------------------------------------------------
       # STEP 2 - PREPARE PYTHON
       # ---------------------------------------------------------------
-      # Configure Python for the E2E test runner.
-      #
-      # pytest is installed explicitly in the next step so the CI
-      # quality gate uses the same test framework demonstrated locally.
-      # ---------------------------------------------------------------
 
       - name: Configure Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+
       # ---------------------------------------------------------------
       # STEP 2B - INSTALL PYTEST
-      # ---------------------------------------------------------------
-      # pytest is the execution framework for the authenticated
-      # KoalaTech E2E business journey.
-      #
-      # The underlying HTTP workflow remains in the reusable journey
-      # module, while pytest provides standard test discovery, reporting
-      # and a CI-friendly non-zero exit code when the gate fails.
       # ---------------------------------------------------------------
 
       - name: Install pytest
@@ -136,13 +118,11 @@ jobs:
       # ---------------------------------------------------------------
       # STEP 3 - VALIDATE THE E2E INFRASTRUCTURE DEFINITION
       # ---------------------------------------------------------------
-      # Catch Docker Compose syntax/configuration problems before
-      # spending time building application images.
-      # ---------------------------------------------------------------
 
       - name: Validate ephemeral Compose configuration
         run: |
           echo "Validating KoalaTech ephemeral environment..."
+
           docker compose \
             -f docker-compose.e2e.yml \
             config --quiet
@@ -153,11 +133,8 @@ jobs:
       # ---------------------------------------------------------------
       # STEP 4 - BUILD AND START THE TEMPORARY ENVIRONMENT
       # ---------------------------------------------------------------
-      # --build ensures the environment tests the source code belonging
-      # to this exact Git commit.
-      #
-      # --wait means GitHub Actions does not begin the business test
-      # until every configured service reports healthy.
+      # --build tests source from this exact Git commit.
+      # --wait prevents E2E execution until services report healthy.
       # ---------------------------------------------------------------
 
       - name: Build and start ephemeral KoalaTech environment
@@ -177,13 +154,11 @@ jobs:
       # ---------------------------------------------------------------
       # STEP 5 - DISPLAY ENVIRONMENT READINESS
       # ---------------------------------------------------------------
-      # This provides readable CI evidence showing which containers are
-      # running before the E2E quality gate executes.
-      # ---------------------------------------------------------------
 
       - name: Verify temporary service state
         run: |
           echo "Current KoalaTech E2E service state:"
+
           docker compose \
             -f docker-compose.e2e.yml \
             ps
@@ -192,7 +167,7 @@ jobs:
       # ---------------------------------------------------------------
       # STEP 6 - RUN THE AUTHENTICATED BUSINESS JOURNEY
       # ---------------------------------------------------------------
-      # The Python test performs:
+      # The pytest E2E test performs:
       #
       # 1. API readiness verification
       # 2. Real administrator authentication
@@ -202,11 +177,8 @@ jobs:
       # 6. Enrollment creation
       # 7. Relationship verification by enrollment/student/course
       #
-      # pytest executes the complete authenticated E2E journey.
-      #
-      # A failed assertion produces a non-zero pytest exit code and
-      # immediately fails this job. Therefore this step is the actual
-      # CI/CD quality gate.
+      # Any failed assertion returns a non-zero exit code.
+      # Therefore this step is the actual CI/CD quality gate.
       # ---------------------------------------------------------------
 
       - name: Run authenticated KoalaTech E2E quality gate
@@ -220,12 +192,6 @@ jobs:
       # ---------------------------------------------------------------
       # STEP 7 - COLLECT FAILURE DIAGNOSTICS
       # ---------------------------------------------------------------
-      # If any previous step fails, collect container state and recent
-      # logs before cleanup occurs.
-      #
-      # This makes failures diagnosable instead of leaving developers
-      # with only a generic CI error.
-      # ---------------------------------------------------------------
 
       - name: Collect diagnostics when quality gate fails
         if: failure()
@@ -235,6 +201,7 @@ jobs:
 
           echo ""
           echo "================ CONTAINER STATE ================"
+
           docker compose \
             -f docker-compose.e2e.yml \
             ps \
@@ -242,6 +209,7 @@ jobs:
 
           echo ""
           echo "================ SERVICE LOGS ==================="
+
           docker compose \
             -f docker-compose.e2e.yml \
             logs \
@@ -252,18 +220,10 @@ jobs:
       # ---------------------------------------------------------------
       # STEP 8 - GUARANTEED EPHEMERAL CLEANUP
       # ---------------------------------------------------------------
-      # if: always() is critical.
-      #
-      # Cleanup executes whether:
-      # - the E2E test passes;
-      # - an assertion fails;
-      # - authentication fails;
-      # - a service becomes unhealthy.
+      # if: always() guarantees cleanup on both PASS and FAIL.
       #
       # --volumes removes temporary PostgreSQL data.
       # --remove-orphans removes unexpected Compose containers.
-      #
-      # This guarantees every pipeline run leaves behind a clean runner.
       # ---------------------------------------------------------------
 
       - name: Always destroy ephemeral E2E environment
@@ -283,8 +243,6 @@ jobs:
       # ---------------------------------------------------------------
       # STEP 9 - SUCCESS SUMMARY
       # ---------------------------------------------------------------
-      # This step only executes when the quality gate passed.
-      # ---------------------------------------------------------------
 
       - name: Report successful quality gate
         if: success()
@@ -294,40 +252,126 @@ jobs:
           echo "Authenticated Student -> Course -> Enrollment"
           echo "business journey completed successfully."
           echo "Temporary environment was removed after validation."
+          echo "PASS-only ACR promotion is now permitted."
           echo "======================================================"
 
+
   # ===================================================================
-  # DOWNSTREAM PIPELINE PROGRESSION PROOF
+  # PASS-ONLY AZURE CONTAINER REGISTRY PROMOTION
   # ===================================================================
-  # This job depends directly on the authenticated E2E quality gate.
+  # This job directly depends on the authenticated E2E quality gate.
   #
-  # GitHub Actions will run this job only when:
-  #     ephemeral-e2e-quality-gate = SUCCESS
+  # PASS -> this job runs and pushes the validated image to ACR.
+  # FAIL -> GitHub Actions automatically skips this entire job.
   #
-  # If the E2E quality gate fails, this job is automatically skipped.
-  # This provides visible evidence that E2E testing controls whether
-  # the pipeline is allowed to progress.
+  # This demonstrates that the E2E result controls whether an
+  # application artifact is permitted to progress through CI/CD.
   # ===================================================================
 
-  downstream-gate-proof:
+  acr-promotion:
 
-    name: Downstream Stage - Allowed Only After E2E PASS
+    name: PASS-Only Promotion to Azure Container Registry
 
     needs:
       - ephemeral-e2e-quality-gate
 
     runs-on: ubuntu-latest
 
+    timeout-minutes: 15
+
+    env:
+      ACR_NAME: viswa103hd226051707
+      ACR_LOGIN_SERVER: viswa103hd226051707.azurecr.io
+      IMAGE_NAME: koalatech-student-service
+
+
     steps:
 
-      - name: Confirm pipeline progression
+      # ---------------------------------------------------------------
+      # STEP 1 - CHECK OUT THE VALIDATED COMMIT
+      # ---------------------------------------------------------------
+
+      - name: Checkout validated KoalaTech source
+        uses: actions/checkout@v4
+
+
+      # ---------------------------------------------------------------
+      # STEP 2 - AUTHENTICATE TO AZURE
+      # ---------------------------------------------------------------
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+
+      # ---------------------------------------------------------------
+      # STEP 3 - AUTHENTICATE TO THE TEMPORARY ACR
+      # ---------------------------------------------------------------
+      # Registry credentials are retrieved inside the GitHub runner
+      # and passed directly to docker login through stdin.
+      # ---------------------------------------------------------------
+
+      - name: Login to temporary Azure Container Registry
+        shell: bash
+        run: |
+          ACR_USERNAME=$(az acr credential show \
+            --name "$ACR_NAME" \
+            --query username \
+            -o tsv)
+
+          ACR_PASSWORD=$(az acr credential show \
+            --name "$ACR_NAME" \
+            --query "passwords[0].value" \
+            -o tsv)
+
+          echo "$ACR_PASSWORD" | docker login \
+            "$ACR_LOGIN_SERVER" \
+            --username "$ACR_USERNAME" \
+            --password-stdin
+
+
+      # ---------------------------------------------------------------
+      # STEP 4 - BUILD AN IMAGE FROM THE PASS-VALIDATED COMMIT
+      # ---------------------------------------------------------------
+
+      - name: Build PASS-validated Docker image
+        run: |
+          echo "E2E quality gate passed."
+          echo "Building validated KoalaTech Student Service image..."
+
+          docker build \
+            --platform linux/amd64 \
+            -t $ACR_LOGIN_SERVER/$IMAGE_NAME:${{ github.sha }} \
+            ./student-service
+
+
+      # ---------------------------------------------------------------
+      # STEP 5 - PUSH ONLY AFTER E2E PASS
+      # ---------------------------------------------------------------
+
+      - name: Push PASS-validated image to ACR
+        run: |
+          echo "Pushing image because the E2E quality gate passed..."
+
+          docker push \
+            $ACR_LOGIN_SERVER/$IMAGE_NAME:${{ github.sha }}
+
+
+      # ---------------------------------------------------------------
+      # STEP 6 - VERIFY THE PROMOTED IMAGE EXISTS IN ACR
+      # ---------------------------------------------------------------
+
+      - name: Verify image stored in ACR
+        shell: bash
         run: |
           echo "======================================================"
           echo "E2E QUALITY GATE: PASSED"
-          echo "DOWNSTREAM PIPELINE STAGE: ALLOWED"
-          echo ""
-          echo "The authenticated KoalaTech E2E business journey"
-          echo "completed successfully, so the pipeline is permitted"
-          echo "to continue to subsequent delivery/deployment stages."
+          echo "ACR PROMOTION: ALLOWED"
+          echo "IMAGE: $ACR_LOGIN_SERVER/$IMAGE_NAME:${{ github.sha }}"
           echo "======================================================"
 
+          az acr repository show-tags \
+            --name "$ACR_NAME" \
+            --repository "$IMAGE_NAME" \
+            --output table
